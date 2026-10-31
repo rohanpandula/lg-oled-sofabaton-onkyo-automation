@@ -1,0 +1,53 @@
+# Dashboard view, not a Home Assistant package.
+title: AV status
+path: av-status
+icon: mdi:audio-video
+subview: true
+type: masonry
+cards:
+- type: markdown
+  title: Picture reaching the TV
+  content: |-
+    {% set tv = states('binary_sensor.lg_tv_power') %}
+    {% set active = tv == 'on' %}
+    {% set idle = 'TV off' if tv == 'off' else 'TV unavailable' %}
+    | Reading | Reported value |
+    | :--- | :--- |
+    | TV | {{ 'On' if active else idle }} |
+    | Screen | {{ states('switch.lg_tv_display_panel') | title if active else idle }} |
+    | Input / app | {{ states('sensor.lg_tv_active_app') if active else idle }} |
+    | Resolution & refresh rate | {{ states('sensor.lg_tv_video_signal') if active else idle }} |
+    | HDR format | {{ states('sensor.lg_tv_dynamic_range') if active else idle }} |
+    | Picture preset | {{ states('sensor.lg_tv_picture_mode') if active else idle }} |
+- type: markdown
+  title: Sound reaching the Onkyo
+  content: |-
+    {% set power = states('media_player.onkyo') %}
+    {% set active = power == 'on' %}
+    {% set idle = 'Receiver off' if power == 'off' else 'Receiver unavailable' %}
+    {% set audio = (state_attr('media_player.onkyo', 'audio_information') or {}) if active else {} %}
+    {% set video = (state_attr('media_player.onkyo', 'video_information') or {}) if active else {} %}
+    | Reading | Reported value |
+    | :--- | :--- |
+    | Receiver | {{ 'On' if active else idle }} |
+    | Selected input | {{ state_attr('media_player.onkyo', 'source') or 'Not reported' if active else idle }} |
+    | Audio input port | {{ audio.get('audio_input_port') or 'Not reported' if active else idle }} |
+    | Incoming audio format | {{ audio.get('input_signal_format') or 'Not reported' if active else idle }} |
+    | Incoming channels | {{ audio.get('input_channels') or 'Not reported' if active else idle }} |
+    | Sample rate | {{ audio.get('input_frequency') or 'Not reported' if active else idle }} |
+    | Active decoder | {{ audio.get('listening_mode') or 'Not reported' if active else idle }} |
+    | Video entering receiver | {{ video.get('input_resolution') or 'Not reported' if active else idle }} |
+
+    These are the receiver's reported input and decoder, rather than the requested sound-mode label.
+- type: markdown
+  title: Players & remote
+  content: |-
+    {% set atv = states('media_player.apple_tv') %}
+    | Device | State |
+    | :--- | :--- |
+    | SofaBaton activity | {{ states('select.x1s_hub_activity') }} |
+    | Apple TV | {{ atv | title }} |
+    | Apple TV app | {{ state_attr('media_player.apple_tv', 'app_name') or 'Not reported' if atv not in ['off', 'unknown', 'unavailable'] else atv | title }} |
+    | CoreELEC | {{ states('media_player.coreelec') | title }} |
+
+    Formats describe the HDMI signal. An Apple TV set to output Dolby Vision continuously can report Dolby Vision for its menus too.

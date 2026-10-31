@@ -1,0 +1,38 @@
+# Optional: requires an existing camera-provided baby-cry binary sensor.
+automation:
+- id: lg_tv_baby_cry_alert
+  alias: 'LG TV: Baby is crying'
+  description: Show a TV toast on a new camera baby-cry detection. Only a real off-to-on transition triggers
+    it; the TV must already be on. Restore a blanked panel so the message is visible during Music mode.
+    Keep playback running, and suppress repeated detections for one minute. This uses the camera's existing
+    classifier. Cancel any pending Music On before restoring the picture so a delayed sync cannot hide
+    the alert.
+  triggers:
+  - trigger: state
+    entity_id: binary_sensor.baby_cry_detected
+    from: 'off'
+    to: 'on'
+  conditions:
+  - condition: state
+    entity_id: binary_sensor.lg_tv_power
+    state: 'on'
+  actions:
+  - action: script.lg_tv_music_mode
+    data:
+      enabled: false
+  - wait_template: '{{ is_state(''switch.lg_tv_display_panel'', ''on'') }}'
+    timeout:
+      seconds: 5
+    continue_on_timeout: true
+  - condition: state
+    entity_id: binary_sensor.lg_tv_power
+    state: 'on'
+  - action: text.set_value
+    target:
+      entity_id: text.lg_tv_screen_notification
+    data:
+      value: Baby is crying
+  - delay:
+      minutes: 1
+  mode: single
+  max_exceeded: silent

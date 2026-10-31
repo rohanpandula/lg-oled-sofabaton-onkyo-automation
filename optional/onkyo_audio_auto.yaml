@@ -1,0 +1,98 @@
+# Optional listening-mode selection only; no volume, power or HDMI source commands.
+input_boolean:
+  onkyo_audio_auto:
+    name: Onkyo Audio Auto
+    icon: mdi:auto-mode
+template:
+- sensor:
+  - name: Onkyo Auto Target
+    unique_id: onkyo_auto_target
+    state: |-
+      {% set info = state_attr('media_player.onkyo', 'audio_information') or {} %} {% set fmt = (info.get('input_signal_format') or '') | lower | trim %} {% set port = (info.get('audio_input_port') or '') | upper | replace(' ', '') %} {% set source = state_attr('media_player.onkyo', 'source') or '' %} {% set channels = (info.get('input_channels') or '') | lower | trim %} {# Source and audio info arrive separately; reject known stale combinations. #} {% set stale = (source == 'STRM BOX' and port != 'HDMI4')
+         or ('BD/DVD' in source and port != 'HDMI1')
+         or (source == 'NETWORK' and port != 'NETWORK') %}
+      {% if not is_state('media_player.onkyo', 'on') or not source or not port or stale %}
+        Hold
+      {% elif 'dolby atmos' in fmt %}
+        Dolby Atmos / Surround
+      {% elif 'dts:x' in fmt or 'dts-x' in fmt %}
+        DTS:X / Neural:X
+      {% elif fmt in ['multich pcm', 'multichannel pcm', 'dolby digital',
+                      'dolby digital plus', 'dolby truehd', 'dolby d',
+                      'dolby d+', 'dolby d plus', 'dolby dtruehd',
+                      'dts', 'dts-hd', 'dts-hd mstr', 'dts-hd hr', 'dts 96/24'] %}
+        Straight Decode
+      {% elif fmt in ['pcm', 'analog'] %}
+        {% if channels and channels not in ['2', '2.0', '2.0 ch', '2.0ch', '2 ch', '2ch'] %}
+          Straight Decode
+        {% else %}
+          Direct
+        {% endif %}
+      {% elif source == 'NETWORK' and port == 'NETWORK' and not fmt %}
+        {# This receiver omits format/channel metadata for its network music input. #}
+        Direct
+      {% elif port == 'ANALOG' and source in ['PHONO', 'CD'] and not fmt %}
+        Direct
+      {% else %}
+        Hold
+      {% endif %}
+    attributes:
+      input_source: '{{ state_attr(''media_player.onkyo'', ''source'') }}'
+      input_format: '{{ (state_attr(''media_player.onkyo'', ''audio_information'') or {}).get(''input_signal_format'',
+        '''') }}'
+      input_port: '{{ (state_attr(''media_player.onkyo'', ''audio_information'') or {}).get(''audio_input_port'',
+        '''') }}'
+      input_channels: '{{ (state_attr(''media_player.onkyo'', ''audio_information'') or {}).get(''input_channels'',
+        '''') }}'
+      listening_context: |-
+        {% set source = state_attr('media_player.onkyo', 'source') or '' %} {% set app = state_attr('media_player.apple_tv', 'app_id') %} {% set kind = state_attr('media_player.apple_tv', 'media_content_type') %} {% if not is_state('media_player.onkyo', 'on') %}Off {% elif source == 'NETWORK' or source in ['PHONO', 'CD'] %}Music {% elif 'BD/DVD' in source %}Movie {% elif source == 'STRM BOX' and states('media_player.apple_tv') in ['playing', 'paused'] %}
+          {% if app == 'com.apple.TVMusic' or kind == 'music' %}Music
+          {% elif kind == 'video' %}Movie
+          {% else %}Unknown{% endif %}
+        {% elif 'GAME' in source and is_state('select.x1s_hub_activity', 'Play Switch') %}Game {% else %}Unknown{% endif %}
+automation:
+- id: onkyo_native_audio_auto
+  alias: Onkyo - Automatic native audio
+  mode: restart
+  triggers:
+  - trigger: state
+    entity_id: sensor.onkyo_auto_target
+  - trigger: state
+    entity_id: input_boolean.onkyo_audio_auto
+  - trigger: state
+    entity_id: media_player.onkyo
+    attribute: sound_mode
+  - trigger: state
+    entity_id: media_player.onkyo
+    to: 'on'
+  - trigger: state
+    entity_id: media_player.onkyo
+    to: 'off'
+  - trigger: homeassistant
+    event: start
+  actions:
+  - condition: state
+    entity_id: input_boolean.onkyo_audio_auto
+    state: 'on'
+  - condition: state
+    entity_id: media_player.onkyo
+    state: 'on'
+  - delay: 00:00:12
+  - condition: state
+    entity_id: input_boolean.onkyo_audio_auto
+    state: 'on'
+  - condition: state
+    entity_id: media_player.onkyo
+    state: 'on'
+  - variables:
+      desired: '{{ states(''sensor.onkyo_auto_target'') }}'
+  - condition: template
+    value_template: |-
+      {{ desired in ['Direct', 'Straight Decode', 'Dolby Atmos / Surround', 'DTS:X / Neural:X']
+         and desired in (state_attr('media_player.onkyo', 'sound_mode_list') or [])
+         and desired != state_attr('media_player.onkyo', 'sound_mode') }}
+  - action: media_player.select_sound_mode
+    target:
+      entity_id: media_player.onkyo
+    data:
+      sound_mode: '{{ desired }}'

@@ -1,0 +1,86 @@
+template:
+- switch:
+  - name: Music mode
+    unique_id: lg_oled_music_mode
+    default_entity_id: switch.music_mode
+    icon: mdi:music-note
+    availability: |-
+      {{ is_state('binary_sensor.lg_tv_power', 'off')
+         or (is_state('binary_sensor.lg_tv_power', 'on')
+             and states('switch.lg_tv_display_panel') in ['on', 'off']) }}
+    state: |-
+      {{ is_state('binary_sensor.lg_tv_power', 'on')
+         and is_state('switch.lg_tv_display_panel', 'off') }}
+    turn_on:
+    - action: script.turn_on
+      target:
+        entity_id: script.lg_tv_music_mode
+      data:
+        variables:
+          enabled: true
+    turn_off:
+    - action: script.turn_on
+      target:
+        entity_id: script.lg_tv_music_mode
+      data:
+        variables:
+          enabled: false
+script:
+  lg_tv_music_mode:
+    alias: LG TV Music Mode
+    description: On and Off share one restartable job. A newer Off or cry alert cancels an older On waiting
+      for hub sync.
+    mode: restart
+    fields:
+      enabled:
+        required: true
+    sequence:
+    - condition: state
+      entity_id: binary_sensor.lg_tv_power
+      state: 'on'
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ enabled | default(false) | bool }}'
+        sequence:
+        - variables:
+            activity_at_start: '{{ states(''select.x1s_hub_activity'') }}'
+            sync_needed: |-
+              {{ is_state('select.x1s_hub_activity', 'Powered Off')
+                 and is_state('binary_sensor.lg_tv_power', 'on')
+                 and is_state('switch.lg_tv_display_panel', 'on')
+                 and state_attr('sensor.lg_tv_active_app', 'app_id') == 'com.webos.app.hdmi4'
+                 and is_state('media_player.onkyo', 'on')
+                 and state_attr('media_player.onkyo', 'source') == 'STRM BOX'
+                 and states('media_player.apple_tv') in ['idle', 'playing', 'paused'] }}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ sync_needed }}'
+            sequence:
+            - action: automation.trigger
+              target:
+                entity_id: automation.sofabaton_auto_start_watch_appletv_on_cec_session
+              data:
+                skip_condition: false
+            - wait_template: '{{ is_state(''select.x1s_hub_activity'', ''Watch AppleTV'') }}'
+              timeout:
+                seconds: 20
+              continue_on_timeout: false
+        - condition: state
+          entity_id: binary_sensor.lg_tv_power
+          state: 'on'
+        - condition: template
+          value_template: |-
+            {{ (sync_needed and is_state('select.x1s_hub_activity', 'Watch AppleTV')
+                 and is_state('media_player.onkyo', 'on')
+                 and state_attr('media_player.onkyo', 'source') == 'STRM BOX'
+                 and state_attr('sensor.lg_tv_active_app', 'app_id') == 'com.webos.app.hdmi4')
+               or (not sync_needed and states('select.x1s_hub_activity') == activity_at_start) }}
+        - action: switch.turn_off
+          target:
+            entity_id: switch.lg_tv_display_panel
+      default:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.lg_tv_display_panel

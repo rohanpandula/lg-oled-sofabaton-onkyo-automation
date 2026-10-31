@@ -1,0 +1,343 @@
+# Adapt entities, source names and activity names before enabling. See README.md.
+automation:
+- id: sofabaton_lg_tv_off_sync
+  alias: 'SofaBaton: sync hub when TV turns off'
+  description: End the hub activity only after Glasshouse reports a real on-to-off transition for 15 seconds.
+    Missing MQTT/network state never counts as power-off. Selecting Powered Off executes the hub shutdown
+    macro, so a restored off value is ignored. A later explicit Apple TV wake on STRM BOX cancels this
+    old shutdown even while the TV is still waking. Turning off only the TV must not shut down receiver-only
+    AirPlay on NETWORK.
+  triggers:
+  - trigger: state
+    entity_id: binary_sensor.lg_tv_power
+    from: 'on'
+    to: 'off'
+    for:
+      seconds: 15
+  conditions:
+  - condition: state
+    entity_id: binary_sensor.lg_tv_power
+    state: 'off'
+  - condition: template
+    value_template: |-
+      {{ states('select.x1s_hub_activity') not in
+         ['Powered Off', 'unknown', 'unavailable'] }}
+  - condition: template
+    value_template: |-
+      {{ not (is_state('media_player.onkyo', 'on')
+                and state_attr('media_player.onkyo', 'source') == 'STRM BOX'
+                and states('media_player.apple_tv') in ['idle', 'playing', 'paused']
+                and state_attr('automation.lg_tv_wake_for_apple_tv', 'last_triggered') is not none
+                and state_attr('automation.lg_tv_wake_for_apple_tv', 'last_triggered') > trigger.to_state.last_changed) }}
+  - condition: template
+    value_template: |-
+      {{ is_state('media_player.onkyo', 'off')
+         or (is_state('media_player.onkyo', 'on')
+             and state_attr('media_player.onkyo', 'source') not in [none, '', 'NETWORK', 'unknown', 'unavailable']) }}
+  actions:
+  - action: select.select_option
+    target:
+      entity_id: select.x1s_hub_activity
+    data:
+      option: Powered Off
+  mode: single
+- id: sofabaton_auto_start_appletv_on_cec
+  alias: SofaBaton Auto Start Watch AppleTV On CEC Session
+  description: Sync a bypass session after TV/receiver/Apple TV confirm HDMI4 and STRM BOX for 30 seconds.
+    Include the Apple TV Home screen. Require the OLED panel on so replaying the activity startup cannot
+    cancel Music mode; Music mode requests this sync before blanking when needed.
+  triggers:
+  - trigger: template
+    value_template: |-
+      {{ is_state('select.x1s_hub_activity', 'Powered Off')
+         and is_state('binary_sensor.lg_tv_power', 'on')
+         and is_state('switch.lg_tv_display_panel', 'on')
+         and state_attr('sensor.lg_tv_active_app', 'app_id') == 'com.webos.app.hdmi4'
+         and is_state('media_player.onkyo', 'on')
+         and state_attr('media_player.onkyo', 'source') == 'STRM BOX'
+         and states('media_player.apple_tv') in ['idle', 'playing', 'paused'] }}
+    for:
+      seconds: 30
+  conditions:
+  - condition: template
+    value_template: |-
+      {{ is_state('select.x1s_hub_activity', 'Powered Off')
+         and is_state('binary_sensor.lg_tv_power', 'on')
+         and is_state('switch.lg_tv_display_panel', 'on')
+         and state_attr('sensor.lg_tv_active_app', 'app_id') == 'com.webos.app.hdmi4'
+         and is_state('media_player.onkyo', 'on')
+         and state_attr('media_player.onkyo', 'source') == 'STRM BOX'
+         and states('media_player.apple_tv') in ['idle', 'playing', 'paused'] }}
+  actions:
+  - action: remote.turn_on
+    target:
+      entity_id: remote.x1s_hub_remote
+    data:
+      activity: Watch AppleTV
+  mode: single
+- id: sofabaton_tv_off_backstop
+  alias: 'SofaBaton: TV off backstop after hub powers off'
+  description: After a real activity ends, immediately switch off a still-on TV through Glasshouse to
+    hide the receiver's HDMI shutdown flash. Known previous activity and current Powered Off are required.
+    Then wait up to 45 seconds for both players to report off, allow CEC five seconds to settle, and recheck
+    the hub, players and TV before correcting any re-wake. Unknown states abort cleanup.
+  triggers:
+  - trigger: state
+    entity_id: select.x1s_hub_activity
+    from:
+    - Watch AppleTV
+    - Watch Dolby Vision
+    - Play Switch
+    - Remote HDMI
+    to: Powered Off
+  conditions:
+  - condition: state
+    entity_id: select.x1s_hub_activity
+    state: Powered Off
+  actions:
+  - choose:
+    - conditions:
+      - condition: state
+        entity_id: binary_sensor.lg_tv_power
+        state: 'on'
+      sequence:
+      - action: button.press
+        continue_on_error: true
+        target:
+          entity_id: button.lg_tv_power_off
+  - wait_template: |-
+      {{ is_state('media_player.apple_tv', 'off')
+         and is_state('media_player.coreelec', 'off') }}
+    timeout:
+      seconds: 45
+    continue_on_timeout: false
+  - delay:
+      seconds: 5
+  - condition: state
+    entity_id: select.x1s_hub_activity
+    state: Powered Off
+  - condition: state
+    entity_id: media_player.apple_tv
+    state: 'off'
+  - condition: state
+    entity_id: media_player.coreelec
+    state: 'off'
+  - condition: state
+    entity_id: binary_sensor.lg_tv_power
+    state: 'on'
+  - action: button.press
+    target:
+      entity_id: button.lg_tv_power_off
+  mode: restart
+- id: ugoos_suspend_off_dolby_vision
+  alias: 'Ugoos: suspend when not on Dolby Vision activity'
+  description: Keep CoreELEC asleep during a known conflicting activity. Only a real change between known
+    hub activities can interrupt playback; reconnects and unknown activities cannot. Idle/paused wake
+    and five-minute checks remain as backstops. This box requires System.Shutdown for standby because
+    cansuspend is false. Never suspend while the powered-on receiver selects BD/DVD, or while its input
+    is unknown.
+  triggers:
+  - trigger: state
+    entity_id: select.x1s_hub_activity
+    from:
+    - Powered Off
+    - Watch AppleTV
+    - Watch Dolby Vision
+    - Play Switch
+    - Remote HDMI
+    to:
+    - Powered Off
+    - Watch AppleTV
+    - Play Switch
+    - Remote HDMI
+    id: activity_changed
+  - trigger: state
+    entity_id: media_player.coreelec
+    to:
+    - idle
+    - paused
+    id: box_woke
+  - trigger: time_pattern
+    minutes: /5
+    id: periodic
+  conditions:
+  - condition: template
+    value_template: |-
+      {{ states('select.x1s_hub_activity') in
+         ['Powered Off', 'Watch AppleTV', 'Play Switch', 'Remote HDMI']
+         and ((trigger.id == 'activity_changed'
+               and states('media_player.coreelec') in ['idle', 'paused', 'playing', 'on'])
+              or (trigger.id in ['box_woke', 'periodic']
+                  and states('media_player.coreelec') in ['idle', 'paused'])) }}
+  - condition: template
+    value_template: |-
+      {{ is_state('media_player.onkyo', 'off')
+         or (is_state('media_player.onkyo', 'on')
+             and state_attr('media_player.onkyo', 'source') not in [none, '', 'unknown', 'unavailable']
+             and 'BD/DVD' not in state_attr('media_player.onkyo', 'source')) }}
+  actions:
+  - action: kodi.call_method
+    target:
+      entity_id: media_player.coreelec
+    data:
+      method: System.Shutdown
+  mode: single
+- id: atv_sleep_on_hub_power_off
+  alias: 'SofaBaton: sleep Apple TV when hub powers off'
+  description: 'Sleep Apple TV only after a known hub activity ends and the TV is off. Abort if Apple
+    TV changed playback/power state after the hub turned off, or the TV woke during the 15-second hold,
+    so an old shutdown cannot interrupt a fresh session. Receiver must still be off: sleeping Apple TV
+    must not send CEC standby into newly started AirPlay or another receiver session.'
+  triggers:
+  - trigger: state
+    entity_id: select.x1s_hub_activity
+    from:
+    - Watch AppleTV
+    - Watch Dolby Vision
+    - Play Switch
+    - Remote HDMI
+    to: Powered Off
+    for:
+      seconds: 15
+  conditions:
+  - condition: state
+    entity_id: select.x1s_hub_activity
+    state: Powered Off
+  - condition: state
+    entity_id: binary_sensor.lg_tv_power
+    state: 'off'
+  - condition: state
+    entity_id: media_player.onkyo
+    state: 'off'
+  - condition: template
+    value_template: |-
+      {{ states('media_player.apple_tv') not in
+         ['off', 'unavailable', 'unknown'] }}
+  - condition: template
+    value_template: '{{ states.media_player.apple_tv.last_changed <= trigger.to_state.last_changed }}'
+  actions:
+  - action: media_player.turn_off
+    target:
+      entity_id: media_player.apple_tv
+  mode: single
+- id: atv_wake_on_appletv_activity
+  alias: 'SofaBaton: wake Apple TV when Watch AppleTV starts'
+  description: Wake Apple TV for a real transition from another known hub activity into Watch AppleTV.
+    Startup and unknown/unavailable reconnects cannot masquerade as a fresh power request.
+  triggers:
+  - trigger: state
+    entity_id: select.x1s_hub_activity
+    to: Watch AppleTV
+    from:
+    - Powered Off
+    - Watch Dolby Vision
+    - Play Switch
+    - Remote HDMI
+  actions:
+  - action: media_player.turn_on
+    target:
+      entity_id: media_player.apple_tv
+  mode: single
+- id: lg_tv_wake_for_apple_tv
+  alias: LG TV Wake For Apple TV
+  description: LG Auto Power Sync can drop the already-on Onkyo into standby during a TV wake. Keep SIMPLINK
+    enabled, leave LG Auto Power Sync off, and wake the TV explicitly after a fresh Apple TV/receiver
+    start or a change to STRM BOX. WOL also works while Glasshouse is asleep. AirPlay on NETWORK and CoreELEC
+    do not qualify. Input-only triggers require a previously known input on an already-on receiver; restored/unknown
+    source metadata cannot wake the TV.
+  triggers:
+  - trigger: state
+    entity_id: media_player.apple_tv
+    from: 'off'
+    to:
+    - idle
+    - paused
+    - playing
+  - trigger: state
+    entity_id: media_player.onkyo
+    from: 'off'
+    to: 'on'
+  - trigger: state
+    entity_id: media_player.onkyo
+    attribute: source
+    to: STRM BOX
+    id: receiver_input
+  conditions:
+  - condition: template
+    value_template: |-
+      {{ states('select.x1s_hub_activity') in ['Powered Off', 'Watch AppleTV']
+         and states('binary_sensor.lg_tv_power') in ['off', 'unknown', 'unavailable'] }}
+  - condition: template
+    value_template: |-
+      {{ trigger.id != 'receiver_input'
+         or (trigger.from_state is not none
+             and trigger.from_state.state == 'on'
+             and trigger.from_state.attributes.get('source') not in [none, '', 'unknown', 'unavailable']) }}
+  actions:
+  - wait_template: |-
+      {{ is_state('media_player.onkyo', 'on')
+         and state_attr('media_player.onkyo', 'source') == 'STRM BOX'
+         and states('media_player.apple_tv') in ['idle', 'paused', 'playing'] }}
+    timeout:
+      seconds: 15
+    continue_on_timeout: false
+  - condition: template
+    value_template: |-
+      {{ states('select.x1s_hub_activity') in ['Powered Off', 'Watch AppleTV']
+         and states('binary_sensor.lg_tv_power') in ['off', 'unknown', 'unavailable'] }}
+  - condition: template
+    value_template: |-
+      {{ is_state('media_player.onkyo', 'on')
+         and state_attr('media_player.onkyo', 'source') == 'STRM BOX'
+         and states('media_player.apple_tv') in ['idle', 'paused', 'playing'] }}
+  - action: wake_on_lan.send_magic_packet
+    data:
+      mac: lg_tv_mac
+      broadcast_address: lan_broadcast
+  mode: restart
+- id: lg_tv_sleep_with_apple_tv
+  alias: 'LG TV: sleep with Apple TV'
+  description: Finish a real Apple TV shutdown after both Apple TV and receiver sleep, including before
+    the hub has synchronized. Require the TV receiver input and either Watch AppleTV or an unsynced hub
+    with CoreELEC asleep. Native TV apps, AirPlay and other activities are excluded.
+  triggers:
+  - trigger: state
+    entity_id: media_player.apple_tv
+    from:
+    - idle
+    - playing
+    - paused
+    to: 'off'
+    for:
+      seconds: 2
+  conditions:
+  - condition: template
+    value_template: |-
+      {{ state_attr('sensor.lg_tv_active_app', 'app_id') == 'com.webos.app.hdmi4'
+         and (is_state('select.x1s_hub_activity', 'Watch AppleTV')
+              or (is_state('select.x1s_hub_activity', 'Powered Off')
+                  and is_state('media_player.coreelec', 'off'))) }}
+  actions:
+  - wait_template: '{{ is_state(''media_player.onkyo'', ''off'') }}'
+    timeout:
+      seconds: 8
+    continue_on_timeout: false
+  - condition: state
+    entity_id: media_player.apple_tv
+    state: 'off'
+  - condition: state
+    entity_id: media_player.onkyo
+    state: 'off'
+  - condition: template
+    value_template: |-
+      {{ state_attr('sensor.lg_tv_active_app', 'app_id') == 'com.webos.app.hdmi4'
+         and (is_state('select.x1s_hub_activity', 'Watch AppleTV')
+              or (is_state('select.x1s_hub_activity', 'Powered Off')
+                  and is_state('media_player.coreelec', 'off'))) }}
+  - condition: state
+    entity_id: binary_sensor.lg_tv_power
+    state: 'on'
+  - action: button.press
+    target:
+      entity_id: button.lg_tv_power_off
+  mode: restart
