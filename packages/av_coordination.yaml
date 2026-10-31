@@ -292,8 +292,8 @@ automation:
          and states('media_player.apple_tv') in ['idle', 'paused', 'playing'] }}
   - action: wake_on_lan.send_magic_packet
     data:
-      mac: lg_tv_mac
-      broadcast_address: lan_broadcast
+      mac: !secret lg_tv_mac
+      broadcast_address: !secret lan_broadcast
   mode: restart
 - id: lg_tv_sleep_with_apple_tv
   alias: 'LG TV: sleep with Apple TV'

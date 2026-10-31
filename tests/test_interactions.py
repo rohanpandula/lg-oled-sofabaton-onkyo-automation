@@ -41,6 +41,10 @@ ExampleLoader.add_constructor('!secret', lambda loader, node: {
 
 def load_config():
     core = yaml.load((ROOT / 'packages/av_coordination.yaml').read_text(), Loader=ExampleLoader)
+    wake = next(a for a in core['automation'] if a['id'] == 'lg_tv_wake_for_apple_tv')
+    assert wake['actions'][-1]['data'] == {
+        'mac': '02:00:00:00:00:01', 'broadcast_address': '192.0.2.255',
+    }, 'Wake-on-LAN fields must resolve !secret values, not send secret key names as literals'
     cry = yaml.safe_load((ROOT / 'optional/baby_cry_alert.yaml').read_text())
     audio = yaml.safe_load((ROOT / 'optional/onkyo_audio_auto.yaml').read_text())
     return {'automations': core['automation'] + cry['automation'] + audio['automation'],

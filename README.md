@@ -2,11 +2,36 @@
 
 Home Assistant examples for making an LG OLED TV, an Onkyo receiver, an Apple TV, and a SofaBaton remote behave like one system—even when you switch between remotes.
 
-The main feature is **Music mode**: play Apple Music on Apple TV through the receiver, including Dolby Atmos when the source and equipment support it, while the OLED screen stays black. A single switch in Home Assistant or Apple Home restores the picture when you want it back.
+The main feature is **Music mode: Apple Music in Dolby Atmos, without an illuminated TV screen.** Start music on Apple TV 4K, then turn on one switch in Home Assistant or Apple Home. The OLED panel turns off while Apple TV and the receiver keep playing. Turn the switch off to bring the picture back.
 
 The rest of the configuration handles the awkward parts around that feature: synchronizing SofaBaton after an Apple TV remote wake, shutting everything down, protecting receiver-only AirPlay, and stopping delayed actions from undoing newer commands.
 
 This is a reference configuration extracted from a working room. It contains YAML examples and regression tests; it is not a HACS integration or an installer. Read the setup section and adapt the device names and inputs before enabling it.
+
+## Why Music mode exists
+
+I wanted to listen to Apple Music's Atmos mixes through my surround system without lighting the room with album artwork, lyrics, or a screensaver. In this room, Apple TV 4K connected to the receiver over HDMI is the Apple Music Atmos source. Receiver-only AirPlay is a separate listening option; it is not the Atmos path this configuration was built to preserve.
+
+Simply pressing TV power was unreliable: HDMI-CEC, the HDMI control system, could also send the receiver or Apple TV into standby and stop the music. Leaving a screensaver running kept the panel illuminated. What was missing from my normal Apple TV/SofaBaton/HomeKit controls was one reliable action meaning **“keep the Atmos music playing; turn off only the OLED panel.”**
+
+LG does provide a [Screen Off function](https://www.lg.com/levant_en/support/product-help/CT20158005-20153215184784), and Glasshouse exposes panel control to Home Assistant. This project connects that capability to a single Music mode toggle and coordinates the other automations so a delayed remote activity does not immediately turn the picture back on. It automates the whole-room behavior rather than requiring a trip through the TV's menus each time.
+
+| Action | TV electronics | OLED panel | Apple TV / receiver |
+| --- | --- | --- | --- |
+| Music mode on | Stay on | Off | Keep playing over HDMI |
+| Music mode off | Stay on | On | Keep playing over HDMI |
+| Normal system power off | Shut down | Off | Follow the usual shutdown sequence |
+
+“Screen off” here means panel blanking, not a black video, minimum brightness, or full TV standby. The TV still consumes power and remains part of the HDMI connection. Atmos must already work before using the toggle; the automation does not add it to a stereo source.
+
+## Setup roadmap
+
+1. [Prepare the devices and SofaBaton activities](#before-installing).
+2. [Confirm Apple Music Atmos works over HDMI](#confirm-apple-music-atmos-before-adding-automations).
+3. [Download the examples, map your entities, and install the packages](#installation).
+4. [Test the toggle and add it to Apple Home](#4-try-music-mode-and-optionally-expose-it-to-apple-home).
+
+You do not need the cry alert, automatic listening-mode selection, dashboard view, or Python tests to use Music mode. CoreELEC is optional, but the reference YAML needs the [specific edits below](#if-you-do-not-have-coreelec) if your room does not have that player.
 
 ## What you get
 
@@ -62,7 +87,9 @@ Music On and Off share one restartable script. If On is waiting for hub synchron
 
 ## Before installing
 
-You need working device integrations first:
+You need Home Assistant already installed, an administrator account, and a way to edit its configuration files. A file editor on Home Assistant OS, a network share, or your usual configuration editor is sufficient. `/config/` below means Home Assistant's configuration directory—the directory containing `configuration.yaml`—not a folder on your laptop. See the [configuration-file guide](https://www.home-assistant.io/docs/configuration/) if you have not edited it before.
+
+Set up these dependencies before copying this repository's YAML:
 
 - A rooted LG TV with [Glasshouse](https://github.com/rorygallagher2024/glasshouse) installed. Follow its own compatibility and installation instructions; this repository does not root the TV.
 - An MQTT broker, Home Assistant's MQTT integration, and the [Glasshouse MQTT bridge](https://rorygallagher2024.github.io/glasshouse/HOME-ASSISTANT/) configured. Confirm power, panel, active-app, and power-off entities work.
@@ -71,15 +98,53 @@ You need working device integrations first:
 - The [Kodi integration](https://www.home-assistant.io/integrations/kodi/) if keeping the CoreELEC logic.
 - Home Assistant able to reach these devices and send a Wake-on-LAN packet to the TV's network. Keep Home Assistant running for this coordination to work.
 
+MQTT is the message connection between Glasshouse and Home Assistant. This repository uses the entities discovered through that connection; it does not supply broker credentials or pair your devices for you. Confirm each integration works on its own before adding coordination.
+
+### Prepare the SofaBaton activities
+
+Create or check your activities in the SofaBaton app first. These YAML files assume those activities already exist and work:
+
+| Activity | Its startup must accomplish |
+| --- | --- |
+| `Watch AppleTV` | Power on TV and receiver, select the TV input connected to the receiver, select the receiver's Apple TV input, and wake Apple TV. |
+| `Watch Dolby Vision` (if using CoreELEC) | Power on TV and receiver, select the same TV input, select the receiver's CoreELEC input, and wake that player. |
+| Hub power off | Send the intended system-off commands and report `Powered Off` through the HA activity selector. |
+
+Verify that starting `Watch AppleTV` again while its devices are already on leaves them on. The hub-sync automation can replay startup, so use explicit **Power On / Power Off** commands where your devices support them; a blind power-toggle command can reverse an already-correct state. Confirm source switching and shutdown work before continuing. This repository does not create or replace those hub macros. `Play Switch` and `Remote HDMI` are just other activities in the original room, not activities you must create.
+
+### Prepare HDMI power and network wake
+
 The reference TV settings are **SIMPLINK on**, **Auto Power Sync off**, and network wake enabled. The receiver retains HDMI-CEC so the Apple TV remote can wake the receiver. Its tested standby-through setting was Auto (Eco), with ARC off because the players connect directly to the receiver. These are observations from this wiring, not universal HDMI/eARC settings. If your sound comes back from the TV over ARC/eARC, adapt that arrangement separately.
 
 Once LG Auto Power Sync is off, waking the TV with the Apple TV remote depends on Home Assistant. SofaBaton still uses its own activity power commands. This configuration does not disable OLED protection features or change panel-care schedules.
 
+On Apple TV, keep **Settings → Remotes and Devices → Control TVs and Receivers** enabled for the receiver-control behavior used here. Verify the Apple TV remote can wake the receiver with the receiver selecting the correct Apple TV input. On the LG, enable the model's network wake option (often called **TV On With Mobile / Turn on via Wi-Fi**); setting names vary by webOS version. Disabling Auto Power Sync alone does not enable network wake. Note the TV's MAC for the interface it actually uses, and reserve its IP in your router if possible.
+
+### Confirm Apple Music Atmos before adding automations
+
+For this listening path you need an **Apple TV 4K**, an Apple Music subscription, an Atmos track, and a compatible receiver/speaker setup. Apple TV HD is not the Atmos source for this guide.
+
+1. Connect Apple TV's HDMI output to the receiver, and the receiver's HDMI output to the TV as shown above. Select those inputs and confirm picture and sound.
+2. On Apple TV, open **Settings → Apps → Music → Dolby Atmos** and choose **Automatic**. See [Apple's Music settings guide](https://support.apple.com/guide/tv/atvba3404860/tvos).
+3. Under **Settings → Video and Audio → Audio Format**, use automatic format selection with Dolby Atmos enabled/available. Forcing the output to Stereo or Dolby Digital 5.1 is not the desired Atmos path. Follow [Apple's audio-format guide](https://support.apple.com/en-gb/102218) for your tvOS version.
+4. Open the **Music app on Apple TV itself**, play a track available in Dolby Atmos, and check the receiver's reported incoming audio format. Establish working Atmos with the picture on first. A listening-mode name alone does not prove the incoming track is Atmos.
+
+Keep that HDMI route selected when testing Music mode. This guide does not establish Atmos support for AirPlay to your particular receiver, and the toggle cannot correct an unsupported source or connection.
+
 ## Installation
+
+Download this repository using **Code → Download ZIP** on GitHub and extract it, or clone it:
+
+```sh
+git clone https://github.com/rohanpandula/lg-oled-sofabaton-onkyo-automation.git
+cd lg-oled-sofabaton-onkyo-automation
+```
+
+Edit a copy of the YAML for your room. You will copy the edited files into Home Assistant; cloning the repo on a laptop does not install anything on HA.
 
 ### 1. Map the example entities and labels
 
-In Home Assistant, open **Developer tools → States** and find your entities. Replace the example IDs throughout the YAML with yours, including IDs inside Jinja templates. If you edit the reference IDs and rerun the tests, update their fixtures too.
+In Home Assistant, open **Developer tools → States** and find your entities. An entity ID is a name such as `media_player.apple_tv`, not the friendly name shown on its card. Replace the example IDs throughout the YAML you plan to install, including IDs inside Jinja templates. For example, replace every `media_player.onkyo` with your actual receiver entity. Templates also contain dot notation such as `states.media_player.apple_tv.last_changed`; update that reference too if you rename Apple TV. If you edit the reference IDs and rerun the tests, update their fixtures too.
 
 | Example entity | Required meaning |
 | --- | --- |
@@ -104,18 +169,43 @@ Also adapt these **literal values**; entity renaming does not change them:
 | `Watch AppleTV`, `Watch Dolby Vision` | Apple TV and CoreELEC SofaBaton activities. |
 | `Play Switch`, `Remote HDMI`, `Powered Off` | Other known activities and the hub's off value. Adapt the known-activity lists to your hub. |
 
-**No CoreELEC?** Remove `ugoos_suspend_off_dolby_vision`, and adapt the CoreELEC conditions in `sofabaton_tv_off_backstop` and `lg_tv_sleep_with_apple_tv`. Do not leave a nonexistent player in those checks: `unknown` intentionally does not count as off.
+Read the receiver's `source` and the TV sensor's `app_id` attributes in Developer tools while the intended input is selected. Do not infer them from labels printed on HDMI sockets. In the SofaBaton selector, inspect the `options` attribute for exact activity strings. Replace activity names consistently in triggers, conditions, and action data; remove unused activities from the known-activity lists and add any real alternatives you use.
+
+Before installing, test `switch.lg_tv_display_panel` on the already-on TV: off must blank the picture while sound continues, and on must restore it. Also verify that HA reports Apple TV and CoreELEC as `off` when they are asleep, rather than `unavailable`. The shutdown guards depend on a confirmed off state.
+
+#### If you do not have CoreELEC
+
+In `packages/av_coordination.yaml`, make all of these edits:
+
+1. Remove the entire automation whose `id` is `ugoos_suspend_off_dolby_vision`.
+2. In `sofabaton_tv_off_backstop`, change the `wait_template` to `{{ is_state('media_player.apple_tv', 'off') }}` and remove the later standalone state condition for `media_player.coreelec`. Keep the hub, Apple TV, and TV checks.
+3. In **both** copies of the context template in `lg_tv_sleep_with_apple_tv` (the initial condition and the condition after waiting), use this expression, adapting the remaining entity/input names as usual:
+
+```jinja
+{{ state_attr('sensor.lg_tv_active_app', 'app_id') == 'com.webos.app.hdmi4'
+   and states('select.x1s_hub_activity') in ['Watch AppleTV', 'Powered Off'] }}
+```
+
+4. Remove the nonexistent CoreELEC activity from the known-activity lists. If you install the optional status view, remove its CoreELEC row too.
+
+Search the edited core YAML for `media_player.coreelec` afterward; there should be no remaining references. Do not treat a nonexistent player's `unknown` state as off.
 
 The CoreELEC example uses `System.Shutdown` because that command puts the tested box into its intended standby state and `cansuspend` was false. Confirm your box's behavior and wake method before keeping it; a different device may fully shut down.
 
 ### 2. Copy the two core packages
 
-Back up your configuration. Copy these files into Home Assistant's `/config/packages/` directory:
+Back up your configuration. Create `/config/packages/` if it does not exist, then copy the two edited core files. The final layout must be:
 
 ```text
-packages/av_coordination.yaml
-packages/music_mode.yaml
+/config/
+  configuration.yaml
+  secrets.yaml
+  packages/
+    av_coordination.yaml
+    music_mode.yaml
 ```
+
+Do not copy the entire repository into that directory or create an extra `packages/packages/` level. Keep `optional/` files outside the loaded package directory until you intentionally install them.
 
 Enable [Home Assistant packages](https://www.home-assistant.io/docs/configuration/packages/) in `configuration.yaml`. Merge with an existing `homeassistant:` section rather than creating a duplicate:
 
@@ -128,13 +218,21 @@ wake_on_lan:
 
 The [`wake_on_lan:` entry](https://www.home-assistant.io/integrations/wake_on_lan/) enables the magic-packet action. Keep an existing entry if you already have one.
 
-Merge the keys from [`secrets.yaml.example`](secrets.yaml.example) into `/config/secrets.yaml` and replace both placeholder values. `lg_tv_mac` is your TV's network-interface MAC; `lan_broadcast` is the broadcast address appropriate to your TV's network. Do not copy the example documentation address as a working LAN address.
+Merge the keys from [`secrets.yaml.example`](secrets.yaml.example) into `/config/secrets.yaml` and replace both placeholder values. `lg_tv_mac` is your TV's network-interface MAC; `lan_broadcast` is the broadcast address appropriate to your TV's network. Find the MAC and subnet in your router's client/network details or the TV's network settings. For example, a `192.168.1.0/24` LAN uses `192.168.1.255` as its broadcast address; other subnet sizes can differ. Do not use the example documentation address `192.0.2.255` on your LAN.
+
+Keep the `!secret` tags in the wake action; these tell HA to read the values from `secrets.yaml`:
+
+```yaml
+data:
+  mac: !secret lg_tv_mac
+  broadcast_address: !secret lan_broadcast
+```
 
 Review existing automations that control the same equipment. Disable superseded copies before enabling these packages; running both old and new shutdown routines defeats the coordination.
 
 ### 3. Validate and verify the created entities
 
-Run Home Assistant's configuration check, then restart Home Assistant to load the packages. Check the logs for loading errors as well: a valid YAML/configuration check alone does not prove every script loaded.
+Open **Developer tools → YAML → Check configuration**. Fix errors before restarting; if YAML tools are hidden, enable Advanced mode in your HA user profile. After the check passes, restart Home Assistant to load the packages. Check **Settings → System → Logs** for loading errors as well: a valid YAML/configuration check alone does not prove every script loaded.
 
 Confirm these exact entity IDs exist, with no `_2` suffix:
 
@@ -149,15 +247,24 @@ The examples deliberately give the script and the two referenced automations nam
 
 ### 4. Try Music mode and optionally expose it to Apple Home
 
-Start Apple Music on Apple TV at your normal volume and confirm audio reaches the receiver. Turn `switch.music_mode` on: the screen should blank and audio should continue. Turn it off: the picture should return. If the hub had not synchronized yet, initial activation may take several seconds; the sync wait times out after 20 seconds instead of blanking blindly.
+Start Apple Music on Apple TV at your normal volume and confirm Atmos reaches the receiver. In HA, open the **Music mode** entity, or use **Developer tools → Actions** to call `switch.turn_on` targeting `switch.music_mode`. The screen should blank and audio should continue. Call `switch.turn_off` on the same entity: the picture should return without stopping the music. If the hub had not synchronized yet, initial activation may take several seconds; the sync wait times out after 20 seconds instead of blanking blindly.
 
-For Apple Home, add **only `switch.music_mode`** to your existing [HomeKit Bridge](https://www.home-assistant.io/integrations/homekit/) inclusion filter, or create a bridge if you do not already have one. There are no separate Music On and Music Off accessories. Keep an existing bridge and entity identity when updating this setup so you do not need to rebuild Home app automations.
+The switch does not start a listening session. Turning it on with the TV fully off leaves the TV off. To end listening, use your normal system power-off action; turning Music mode off only restores the picture.
+
+For Apple Home, use HA's **[HomeKit Bridge](https://www.home-assistant.io/integrations/homekit/)** integration (which exports HA entities to Apple Home):
+
+1. Go to **Settings → Devices & services**. Configure the existing HomeKit Bridge, or add that integration if you do not have one.
+2. Include `switch.music_mode` in its entity filter. If configuring a bridge with an include filter, make sure the switch domain is eligible and select Music mode in the entity selection. For a YAML-managed bridge, add the entity to the existing `filter.include_entities` list instead.
+3. If creating a bridge, pair it in Apple's Home app with the QR/setup code HA supplies. An already-paired bridge should not need to be removed and paired again just to include this switch.
+4. Find the Music mode accessory in Apple Home and toggle it on and off while Apple TV is playing. On means panel off; Off means picture restored.
+
+There are no separate Music On and Music Off accessories. Keep an existing bridge and entity identity when updating this setup so you do not need to rebuild Home app automations.
 
 ## Optional examples
 
 Files in `optional/` are not loaded automatically. Install only the ones you want.
 
-- **[`baby_cry_alert.yaml`](optional/baby_cry_alert.yaml):** copy to `/config/packages/`, replace `binary_sensor.baby_cry_detected` with an existing camera sensor, and choose the notification text. The original sensor came from a G6 Instant camera. A real off-to-on detection restores the panel, shows a toast, and leaves playback running. The TV must already be on. Repeated detections are suppressed for one minute. The alert leaves the picture on; it does not automatically return to Music mode. This is a convenience notification, not the camera's detection implementation or a substitute for a baby monitor.
+- **[`baby_cry_alert.yaml`](optional/baby_cry_alert.yaml):** copy to `/config/packages/`, replace `binary_sensor.baby_cry_detected` with an existing camera sensor, map `text.lg_tv_screen_notification` to your Glasshouse notification text entity, and choose the notification text. The original sensor came from a G6 Instant camera. A real off-to-on detection restores the panel, shows a toast, and leaves playback running. The TV must already be on. Repeated detections are suppressed for one minute. The alert leaves the picture on; it does not automatically return to Music mode. This is a convenience notification, not the camera's detection implementation or a substitute for a baby monitor.
 - **[`onkyo_audio_auto.yaml`](optional/onkyo_audio_auto.yaml):** copy to `/config/packages/`. Enable `input_boolean.onkyo_audio_auto` to opt in; leave it off for manual listening-mode selection. The helper interprets receiver metadata, waits 12 seconds for it to settle, and selects a mode only if the receiver advertises support. Turning the helper off cancels pending Auto work. Adapt HDMI port checks and mode labels to your receiver. It cannot add Atmos to content that does not contain it.
 - **[`av_status_view.yaml`](optional/av_status_view.yaml):** add as a view in a dashboard's raw configuration, **not** as a package. Adapt the entities for picture mode, video signal, and dynamic range. It uses standard Markdown cards and hides stale signal details when the corresponding device is off. To show these cards only on a CoreELEC screen, place the cards inside your existing conditional dashboard layout. The reference view itself is a manually opened subview.
 
